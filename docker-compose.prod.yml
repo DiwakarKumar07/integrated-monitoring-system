@@ -1,0 +1,172 @@
+version: '3.8'
+
+services:
+  # NexusPulse Next.js Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus_pulse_app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_APP_ENV=production
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - NEXT_PUBLIC_GRAFANA_URL=${NEXT_PUBLIC_GRAFANA_URL:-http://localhost:3001}
+      - NEXT_PUBLIC_PROMETHEUS_URL=${NEXT_PUBLIC_PROMETHEUS_URL:-http://localhost:9090}
+      - NEXT_PUBLIC_LOKI_URL=${NEXT_PUBLIC_LOKI_URL:-http://localhost:3100}
+      - NEXT_PUBLIC_TEMPO_URL=${NEXT_PUBLIC_TEMPO_URL:-http://localhost:3200}
+      - NEXT_PUBLIC_ALERTMANAGER_URL=${NEXT_PUBLIC_ALERTMANAGER_URL:-http://localhost:9093}
+    depends_on:
+      - grafana
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Grafana Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring-config/grafana_dashboard.json:/var/lib/grafana/dashboards/aws-monitoring.json
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus Metrics Engine
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring-config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring-config/prometheus_rules.yml:/etc/prometheus/prometheus_rules.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-200h}'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Loki Log Aggregator
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring-config/loki.yml:/etc/loki/loki.yml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/loki.yml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Promtail Log Shipper
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    restart: unless-stopped
+    ports:
+      - "9080:9080"
+    volumes:
+      - ./monitoring-config/promtail.yml:/etc/promtail/promtail.yml
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/promtail.yml
+
+  # Tempo Distributed Tracing
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    restart: unless-stopped
+    ports:
+      - "3200:3200"
+      - "9095:9095"
+    volumes:
+      - ./monitoring-config/tempo.yml:/etc/tempo/tempo.yml
+      - tempo-data:/tmp/tempo/data
+    command:
+      - -config.file=/etc/tempo/tempo.yml
+
+  # Alertmanager
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring-config/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.tsdb.path=/alertmanager'
+
+  # Node Exporter for Host OS Metrics
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+
+  # Blackbox Exporter for Endpoint Probes
+  blackbox_exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox_exporter
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./monitoring-config/blackbox.yml:/etc/blackbox_exporter/config.yml
+
+  # AWS CloudWatch Exporter
+  aws_cloudwatch_exporter:
+    image: prom/cloudwatch-exporter:latest
+    container_name: aws_cloudwatch_exporter
+    restart: unless-stopped
+    ports:
+      - "9106:9106"
+    volumes:
+      - ./monitoring-config/aws_exporter.yml:/config.yml
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    command:
+      - --config.file=/config.yml
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  alertmanager-data:
+
